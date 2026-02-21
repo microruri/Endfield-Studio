@@ -4,17 +4,20 @@ using System.Linq;
 using System.Text.Json;
 using Endfield.BlcTool.Core.Blc;
 
+// Entry point wrapper to keep top-level flow readable and allow explicit exit codes.
 var exitCode = Run(args);
 Environment.Exit(exitCode);
 
 static int Run(string[] args)
 {
+    // 1) Basic command routing.
     if (args.Length == 0 || IsHelp(args[0]))
     {
         PrintHelp();
         return 0;
     }
 
+    // 2) decode command is the only operation in phase-1.
     if (!args[0].Equals("decode", StringComparison.OrdinalIgnoreCase))
     {
         Console.Error.WriteLine("Unknown command.");
@@ -22,6 +25,7 @@ static int Run(string[] args)
         return 2;
     }
 
+    // 3) Validate input file path and extension.
     var input = GetOption(args, "-i", "--input");
     if (string.IsNullOrWhiteSpace(input) || !File.Exists(input) || !input.EndsWith(".blc", StringComparison.OrdinalIgnoreCase))
     {
@@ -29,6 +33,7 @@ static int Run(string[] args)
         return 2;
     }
 
+    // 4) Derive output path when user does not specify -o/--output.
     var output = GetOption(args, "-o", "--output");
     if (string.IsNullOrWhiteSpace(output))
     {
@@ -36,10 +41,12 @@ static int Run(string[] args)
         output = Path.Combine(dir, Path.GetFileNameWithoutExtension(input) + ".json");
     }
 
+    // Optional verbose mode for quick sanity checks on decoded metadata.
     var verbose = args.Any(x => x.Equals("-v", StringComparison.OrdinalIgnoreCase) || x.Equals("--verbose", StringComparison.OrdinalIgnoreCase));
 
     try
     {
+        // 5) Decode pipeline: read -> decrypt -> parse.
         var bytes = File.ReadAllBytes(input);
         var info = BlcDecoder.Decode(bytes);
 
@@ -52,6 +59,7 @@ static int Run(string[] args)
         if (!string.IsNullOrEmpty(outputDir))
             Directory.CreateDirectory(outputDir);
 
+        // 6) Serialize parsed model to pretty JSON.
         var json = JsonSerializer.Serialize(info, jsonOptions);
         File.WriteAllText(output, json);
 
