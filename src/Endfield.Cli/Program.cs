@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Endfield.BlcTool.Core.Blc;
+using Endfield.JsonTool.Core.Json;
 
 var exitCode = Run(args);
 Environment.Exit(exitCode);
@@ -36,6 +37,7 @@ static int Run(string[] args)
         return operation.ToLowerInvariant() switch
         {
             "blc-all" => ConvertAllBlc(gameRoot, outputPath),
+            "json-index" => ConvertIndexJson(gameRoot, outputPath),
             _ => UnknownOperation(operation)
         };
     }
@@ -167,8 +169,73 @@ static void ProcessBlcFile(string blcPath, string vfsRoot, string outputPath, re
 static int UnknownOperation(string operation)
 {
     Console.Error.WriteLine($"Unknown operation: {operation}");
-    Console.Error.WriteLine("Supported operations: blc-all");
+    Console.Error.WriteLine("Supported operations: blc-all, json-index");
     return 2;
+}
+
+static int ConvertIndexJson(string gameRoot, string outputPath)
+{
+    var candidates = new[]
+    {
+        (Input: Path.Combine(gameRoot, "Endfield_Data", "StreamingAssets", "index_main.json"), Output: "StreamingAssets.index_main.json"),
+        (Input: Path.Combine(gameRoot, "Endfield_Data", "StreamingAssets", "index_initial.json"), Output: "StreamingAssets.index_initial.json"),
+        (Input: Path.Combine(gameRoot, "Endfield_Data", "Persistent", "index_main.json"), Output: "Persistent.index_main.json"),
+        (Input: Path.Combine(gameRoot, "Endfield_Data", "Persistent", "index_initial.json"), Output: "Persistent.index_initial.json")
+    };
+
+    Directory.CreateDirectory(outputPath);
+
+    var found = 0;
+    var ok = 0;
+    var fail = 0;
+    var partial = 0;
+
+    foreach (var item in candidates)
+    {
+        if (!File.Exists(item.Input))
+            continue;
+
+        found++;
+        try
+        {
+            var encryptedBytes = File.ReadAllBytes(item.Input);
+            var firstStageBytes = JsonDecryptor.DecryptFirstStage(encryptedBytes);
+
+            var outFile = Path.Combine(outputPath, item.Output);
+
+            if (JsonDecryptor.TryDecodeUtf8Json(firstStageBytes, out var plainJson))
+            {
+                File.WriteAllText(outFile, plainJson);
+                ok++;
+                Console.WriteLine($"[OK] {item.Input} -> {outFile}");
+            }
+            else
+            {
+                var binFile = Path.Combine(outputPath, Path.ChangeExtension(item.Output, ".stage1.bin"));
+                var previewFile = Path.Combine(outputPath, Path.ChangeExtension(item.Output, ".stage1.preview.txt"));
+
+                File.WriteAllBytes(binFile, firstStageBytes);
+                File.WriteAllText(previewFile, JsonDecryptor.BuildPrintablePreview(firstStageBytes));
+                partial++;
+                ok++;
+                Console.WriteLine($"[PARTIAL] {item.Input}: stage-1 decrypt succeeded (not UTF-8 JSON). Saved: {binFile}, {previewFile}");
+            }
+        }
+        catch (Exception ex)
+        {
+            fail++;
+            Console.Error.WriteLine($"[FAIL] {item.Input}: {ex.Message}");
+        }
+    }
+
+    if (found == 0)
+    {
+        Console.Error.WriteLine("No index json files found under Endfield_Data/StreamingAssets or Endfield_Data/Persistent.");
+        return 3;
+    }
+
+    Console.WriteLine($"Done. Success={ok}, Partial={partial}, Failed={fail}");
+    return fail == 0 ? 0 : 1;
 }
 
 static void PrintUsage()
@@ -178,7 +245,7 @@ static void PrintUsage()
     Console.WriteLine();
     Console.WriteLine("Options:");
     Console.WriteLine("  -g, --game-root   Game root directory.");
-    Console.WriteLine("  -t, --type        Operation type. Supported: blc-all");
+    Console.WriteLine("  -t, --type        Operation type. Supported: blc-all, json-index");
     Console.WriteLine("  -o, --output      Output directory.");
     Console.WriteLine("  -h, --help        Show help.");
     Console.WriteLine();

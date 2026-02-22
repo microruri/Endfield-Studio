@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Endfield.BlcTool.Core\Endfield.BlcTool.Core.csproj" />
+    <ProjectReference Include="..\Endfield.JsonTool.Core\Endfield.JsonTool.Core.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
