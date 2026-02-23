@@ -57,6 +57,14 @@ public static class CliApplication
                     ? MissingOptionForOperation("manifest-assets-yaml", "-o/--output")
                     : ManifestAssetsYamlOperation.Execute(parsed.GameRoot, parsed.OutputPath),
 
+                "extract-from-chk" => string.IsNullOrWhiteSpace(parsed.ChkPath)
+                    ? MissingOptionForOperation("extract-from-chk", "-c/--chk")
+                    : string.IsNullOrWhiteSpace(parsed.FileNameFilter)
+                        ? MissingOptionForOperation("extract-from-chk", "-f/--filter")
+                        : string.IsNullOrWhiteSpace(parsed.OutputPath)
+                            ? MissingOptionForOperation("extract-from-chk", "-o/--output")
+                            : ExtractFromChkOperation.Execute(parsed.GameRoot, parsed.ChkPath, parsed.FileNameFilter, parsed.OutputPath),
+
                 _ => UnknownOperation(parsed.Operation)
             };
         }
@@ -76,7 +84,7 @@ public static class CliApplication
     private static int UnknownOperation(string operation)
     {
         Console.Error.WriteLine($"Unknown operation: {operation}");
-        Console.Error.WriteLine("Supported operations: blc-all, json-index, chk-list, extract-type, manifest-assets-yaml");
+        Console.Error.WriteLine("Supported operations: blc-all, json-index, chk-list, extract-type, manifest-assets-yaml, extract-from-chk");
         return 2;
     }
 }

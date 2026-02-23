@@ -14,8 +14,10 @@ public sealed class CliArguments
     public string? Operation { get; }
     public string? OutputPath { get; }
     public string? ResourceTypeName { get; }
+    public string? ChkPath { get; }
+    public string? FileNameFilter { get; }
 
-    private CliArguments(string[] rawArgs, bool showHelp, bool decodeContent, string? gameRoot, string? operation, string? outputPath, string? resourceTypeName)
+    private CliArguments(string[] rawArgs, bool showHelp, bool decodeContent, string? gameRoot, string? operation, string? outputPath, string? resourceTypeName, string? chkPath, string? fileNameFilter)
     {
         RawArgs = rawArgs;
         ShowHelp = showHelp;
@@ -24,6 +26,8 @@ public sealed class CliArguments
         Operation = operation;
         OutputPath = outputPath;
         ResourceTypeName = resourceTypeName;
+        ChkPath = chkPath;
+        FileNameFilter = fileNameFilter;
     }
 
     /// <summary>
@@ -37,8 +41,10 @@ public sealed class CliArguments
         var operation = GetOption(args, "-t", "--type");
         var outputPath = GetOption(args, "-o", "--output");
         var resourceTypeName = GetOption(args, "-n", "--name");
+        var chkPath = GetOption(args, "-c", "--chk");
+        var fileNameFilter = GetOption(args, "-f", "--filter");
 
-        return new CliArguments(args, showHelp, decodeContent, gameRoot, operation, outputPath, resourceTypeName);
+        return new CliArguments(args, showHelp, decodeContent, gameRoot, operation, outputPath, resourceTypeName, chkPath, fileNameFilter);
     }
 
     private static bool HasFlag(string[] args, string shortName, string longName)
