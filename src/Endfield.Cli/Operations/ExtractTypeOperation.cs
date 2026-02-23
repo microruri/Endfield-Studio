@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using Endfield.BlcTool.Core.Blc;
 using Endfield.BlcTool.Core.Crypto;
+using Endfield.BlcTool.Core.Models;
 using Endfield.Cli.App;
 
 namespace Endfield.Cli.Operations;
@@ -57,83 +58,103 @@ public static class ExtractTypeOperation
         var allFiles = parsed.AllChunks.SelectMany(c => c.Files).ToList();
         Console.WriteLine($"[INFO] GroupCfgName={parsed.GroupCfgName}, TotalFiles={allFiles.Count}, Chunks={parsed.AllChunks.Count}");
 
-        Console.WriteLine("[STEP 4/6] Prepare output directory and crypto context...");
-        Directory.CreateDirectory(outputPath);
-        var key = KeyDeriver.GetCommonChachaKey();
-        Console.WriteLine($"[INFO] CHK roots: Persistent={persistentDataRoot}, StreamingAssets={streamingDataRoot}");
+        Console.WriteLine("[STEP 4/6] Build .chk load plan and print summary...");
+        var chunkToFiles = allFiles
+            .GroupBy(f => f.FileChunkMD5Name ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+        var plans = new List<ChkLoadPlan>();
+        var missingChunkIds = new List<string>();
+        var invalidChunkIdFileCount = 0;
+
+        foreach (var chunkId in chunkToFiles.Keys.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+        {
+            var filesInChunk = chunkToFiles[chunkId];
+            if (string.IsNullOrWhiteSpace(chunkId))
+            {
+                invalidChunkIdFileCount += filesInChunk.Count;
+                continue;
+            }
+
+            var relChk = Path.Combine("VFS", groupHash, $"{chunkId}.chk");
+            var persistentChk = Path.Combine(gameRoot, "Endfield_Data", "Persistent", relChk);
+            var streamingChk = Path.Combine(gameRoot, "Endfield_Data", "StreamingAssets", relChk);
+            var selectedChk = CliHelpers.ResolvePreferredPath(persistentChk, streamingChk);
+
+            if (selectedChk == null)
+            {
+                missingChunkIds.Add(chunkId);
+                continue;
+            }
+
+            var source = selectedChk.StartsWith(persistentDataRoot, StringComparison.OrdinalIgnoreCase)
+                ? "Persistent"
+                : "StreamingAssets";
+
+            plans.Add(new ChkLoadPlan(
+                chunkId,
+                selectedChk,
+                source,
+                new FileInfo(selectedChk).Length,
+                filesInChunk));
+        }
+
+        long totalChkBytes = 0;
+        var fromPersistent = 0;
+        var fromStreaming = 0;
+        foreach (var plan in plans)
+        {
+            totalChkBytes += plan.SizeBytes;
+            if (plan.Source == "Persistent")
+                fromPersistent++;
+            else
+                fromStreaming++;
+
+            Console.WriteLine($"[CHK-PLAN] {plan.ChunkId} | source={plan.Source} | size={FormatBytes(plan.SizeBytes)} ({plan.SizeBytes} B) | files={plan.Files.Count}");
+        }
+
+        foreach (var chunkId in missingChunkIds)
+            Console.WriteLine($"[CHK-MISS] {chunkId}");
+
+        Console.WriteLine($"[INFO] ChkSummary: RequiredChunks={chunkToFiles.Count}, LoadableChunks={plans.Count}, MissingChunks={missingChunkIds.Count}, TotalLoadSize={FormatBytes(totalChkBytes)} ({totalChkBytes} B)");
+        Console.WriteLine($"[INFO] ChkSource: Persistent={fromPersistent}, StreamingAssets={fromStreaming}");
+        if (invalidChunkIdFileCount > 0)
+            Console.WriteLine($"[WARN] Files with empty chunk id: {invalidChunkIdFileCount}");
 
         Console.WriteLine("[STEP 5/6] Extract resource files from .chk containers...");
+        Directory.CreateDirectory(outputPath);
+        var key = KeyDeriver.GetCommonChachaKey();
 
         var success = 0;
         var failed = 0;
-        var missingChk = 0;
-        var fromPersistent = 0;
-        var fromStreaming = 0;
+        var missingChk = missingChunkIds.Count;
 
-        var chkPathCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        var chkStreamCache = new Dictionary<string, FileStream>(StringComparer.OrdinalIgnoreCase);
+        var totalFiles = allFiles.Count;
+        var processed = 0;
+        var reportEvery = Math.Max(1, totalFiles / 50); // around 50 count-based updates
+        const int TimeReportIntervalMs = 3000; // plus periodic heartbeat every ~3s
+        var nextTimeReportTick = Environment.TickCount64 + TimeReportIntervalMs;
+        Console.WriteLine($"[PROGRESS] 0/{totalFiles} (0.0%)");
 
-        try
+        foreach (var plan in plans)
         {
-            for (var i = 0; i < allFiles.Count; i++)
+            using var chkStream = File.Open(plan.ChkPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            foreach (var file in plan.Files)
             {
-                var file = allFiles[i];
-                if (i % 5000 == 0)
-                    Console.WriteLine($"[PROGRESS] Processing {i}/{allFiles.Count}...");
-
                 try
                 {
-                    var chunkId = file.FileChunkMD5Name;
-                    if (string.IsNullOrWhiteSpace(chunkId))
-                    {
-                        failed++;
-                        Console.Error.WriteLine($"[FAIL] Empty chunk id for file: {file.FileName}");
-                        continue;
-                    }
-
-                    if (!chkPathCache.TryGetValue(chunkId, out var selectedChk))
-                    {
-                        var relChk = Path.Combine("VFS", groupHash, $"{chunkId}.chk");
-                        var persistentChk = Path.Combine(gameRoot, "Endfield_Data", "Persistent", relChk);
-                        var streamingChk = Path.Combine(gameRoot, "Endfield_Data", "StreamingAssets", relChk);
-                        selectedChk = CliHelpers.ResolvePreferredPath(persistentChk, streamingChk);
-                        chkPathCache[chunkId] = selectedChk;
-
-                        if (selectedChk != null)
-                        {
-                            if (selectedChk.StartsWith(persistentDataRoot, StringComparison.OrdinalIgnoreCase))
-                                fromPersistent++;
-                            else
-                                fromStreaming++;
-                        }
-                    }
-
-                    if (selectedChk == null)
-                    {
-                        missingChk++;
-                        failed++;
-                        Console.Error.WriteLine($"[MISS] Missing .chk for chunk={chunkId}, file={file.FileName}");
-                        continue;
-                    }
-
-                    if (!chkStreamCache.TryGetValue(selectedChk, out var chkStream))
-                    {
-                        chkStream = File.Open(selectedChk, FileMode.Open, FileAccess.Read, FileShare.Read);
-                        chkStreamCache[selectedChk] = chkStream;
-                    }
-
                     if (file.Offset < 0 || file.Len < 0)
                     {
                         failed++;
                         Console.Error.WriteLine($"[FAIL] Invalid offset/len for file={file.FileName}, offset={file.Offset}, len={file.Len}");
-                        continue;
+                        goto ProgressUpdate;
                     }
 
                     if (file.Len > int.MaxValue)
                     {
                         failed++;
                         Console.Error.WriteLine($"[FAIL] File too large for current extractor (>2GB): {file.FileName}");
-                        continue;
+                        goto ProgressUpdate;
                     }
 
                     var length = (int)file.Len;
@@ -154,7 +175,7 @@ public static class ExtractTypeOperation
                     {
                         failed++;
                         Console.Error.WriteLine($"[FAIL] Short read for file={file.FileName}, expected={length}, actual={totalRead}");
-                        continue;
+                        goto ProgressUpdate;
                     }
 
                     if (file.BUseEncrypt)
@@ -170,7 +191,7 @@ public static class ExtractTypeOperation
                     {
                         failed++;
                         Console.Error.WriteLine($"[FAIL] Invalid output file path from virtual name: {file.FileName}");
-                        continue;
+                        goto ProgressUpdate;
                     }
 
                     var outFile = Path.Combine(outputPath, safeRelative);
@@ -186,16 +207,82 @@ public static class ExtractTypeOperation
                     failed++;
                     Console.Error.WriteLine($"[FAIL] {file.FileName}: {ex.Message}");
                 }
+
+            ProgressUpdate:
+                processed++;
+                ReportProgressIfNeeded(processed, totalFiles, reportEvery, ref nextTimeReportTick, success, failed);
             }
         }
-        finally
+
+        if (missingChunkIds.Count > 0)
         {
-            foreach (var stream in chkStreamCache.Values)
-                stream.Dispose();
+            foreach (var missingChunkId in missingChunkIds)
+            {
+                if (!chunkToFiles.TryGetValue(missingChunkId, out var filesInMissingChunk))
+                    continue;
+
+                foreach (var file in filesInMissingChunk)
+                {
+                    failed++;
+                    processed++;
+                    Console.Error.WriteLine($"[MISS] Missing .chk for chunk={missingChunkId}, file={file.FileName}");
+                    ReportProgressIfNeeded(processed, totalFiles, reportEvery, ref nextTimeReportTick, success, failed);
+                }
+            }
+        }
+
+        if (invalidChunkIdFileCount > 0)
+        {
+            failed += invalidChunkIdFileCount;
+            for (var i = 0; i < invalidChunkIdFileCount; i++)
+            {
+                processed++;
+                ReportProgressIfNeeded(processed, totalFiles, reportEvery, ref nextTimeReportTick, success, failed);
+            }
         }
 
         Console.WriteLine("[STEP 6/6] Finished extraction.");
         Console.WriteLine($"Done. Success={success}, Failed={failed}, MissingChk={missingChk}, ChkFromPersistent={fromPersistent}, ChkFromStreaming={fromStreaming}");
         return failed == 0 ? 0 : 1;
     }
+
+    private static void ReportProgressIfNeeded(int processed, int totalFiles, int reportEvery, ref long nextTimeReportTick, int success, int failed)
+    {
+        var nowTick = Environment.TickCount64;
+        var shouldReportByCount = processed == totalFiles || processed % reportEvery == 0;
+        var shouldReportByTime = nowTick >= nextTimeReportTick;
+        if (!shouldReportByCount && !shouldReportByTime)
+            return;
+
+        var percent = totalFiles == 0 ? 100.0 : (double)processed / totalFiles * 100.0;
+        Console.WriteLine($"[PROGRESS] {processed}/{totalFiles} ({percent:F1}%), success={success}, failed={failed}");
+
+        if (shouldReportByTime)
+            nextTimeReportTick = nowTick + 3000;
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        const long kb = 1024;
+        const long mb = kb * 1024;
+        const long gb = mb * 1024;
+
+        if (bytes >= gb)
+            return $"{bytes / (double)gb:F2} GiB";
+
+        if (bytes >= mb)
+            return $"{bytes / (double)mb:F2} MiB";
+
+        if (bytes >= kb)
+            return $"{bytes / (double)kb:F2} KiB";
+
+        return $"{bytes} B";
+    }
+
+    private sealed record ChkLoadPlan(
+        string ChunkId,
+        string ChkPath,
+        string Source,
+        long SizeBytes,
+        List<BlcFileInfo> Files);
 }
