@@ -3,6 +3,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using Endfield.Tool.CLI.Decode.BundleManifest;
+using Endfield.Tool.CLI.Decode.IFix;
 using Endfield.Tool.CLI.Decode.SparkBuffer;
 using Endfield.Tool.CLI.Decode.StringPath;
 
@@ -64,10 +65,42 @@ public static class DecodeContentProcessor
                         return false;
                     }
 
-                    var token = new SparkBytesDecoder(input).Load();
-                    var json = token.ToString(Newtonsoft.Json.Formatting.Indented);
-                    output = Encoding.UTF8.GetBytes(json);
-                    return true;
+                    if (!LooksLikeSparkHeader(input))
+                    {
+                        if (ILFixPatchReadableDecoder.LooksLikeIlFixPatch(input))
+                        {
+                            output = ILFixPatchReadableDecoder.DecodeToReadableTextBytes(input);
+                            message = "decoded ILFix patch metadata view";
+                            return true;
+                        }
+
+                        // Unknown non-Spark payload: keep raw bytes.
+                        message = "non-Spark IFix patch binary detected; kept original payload";
+                        return true;
+                    }
+
+                    try
+                    {
+                        var token = new SparkBytesDecoder(input).Load();
+                        var json = token.ToString(Newtonsoft.Json.Formatting.Indented);
+                        output = Encoding.UTF8.GetBytes(json);
+                        message = "decoded SparkBuffer payload";
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        // Spark decode failed: try ILFix-readable projection.
+                        if (ILFixPatchReadableDecoder.LooksLikeIlFixPatch(input))
+                        {
+                            output = ILFixPatchReadableDecoder.DecodeToReadableTextBytes(input);
+                            message = "decoded ILFix patch metadata view";
+                            return true;
+                        }
+
+                        // Keep extraction robust: unknown patch variants should still be exported.
+                        message = $"Spark decode not applied ({ex.Message}); kept original payload";
+                        return true;
+                    }
 
                 default:
                     message = "no decoder configured for resource type";
@@ -76,8 +109,33 @@ public static class DecodeContentProcessor
         }
         catch (Exception ex)
         {
+            if (resourceTypeName == "IFixPatchOut" && ILFixPatchReadableDecoder.LooksLikeIlFixPatch(input))
+            {
+                output = ILFixPatchReadableDecoder.DecodeToReadableTextBytes(input);
+                message = $"fallback ILFix decode applied after exception: {ex.Message}";
+                return true;
+            }
+
             message = ex.Message;
             return false;
         }
+    }
+
+    private static bool LooksLikeSparkHeader(byte[] input)
+    {
+        if (input.Length < 12)
+            return false;
+
+        var typeDefsPtr = BitConverter.ToInt32(input, 0);
+        var rootDefPtr = BitConverter.ToInt32(input, 4);
+        var dataPtr = BitConverter.ToInt32(input, 8);
+
+        if (typeDefsPtr < 0 || rootDefPtr < 0 || dataPtr < 0)
+            return false;
+
+        if (typeDefsPtr >= input.Length || rootDefPtr >= input.Length || dataPtr >= input.Length)
+            return false;
+
+        return true;
     }
 }
