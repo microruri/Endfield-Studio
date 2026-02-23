@@ -53,6 +53,10 @@ public static class CliApplication
                         ? MissingOptionForOperation("extract-type", "-o/--output")
                         : ExtractTypeOperation.Execute(parsed.GameRoot, parsed.ResourceTypeName, parsed.OutputPath, parsed.DecodeContent),
 
+                "manifest-assets-yaml" => string.IsNullOrWhiteSpace(parsed.OutputPath)
+                    ? MissingOptionForOperation("manifest-assets-yaml", "-o/--output")
+                    : ManifestAssetsYamlOperation.Execute(parsed.GameRoot, parsed.OutputPath),
+
                 _ => UnknownOperation(parsed.Operation)
             };
         }
@@ -72,7 +76,7 @@ public static class CliApplication
     private static int UnknownOperation(string operation)
     {
         Console.Error.WriteLine($"Unknown operation: {operation}");
-        Console.Error.WriteLine("Supported operations: blc-all, json-index, chk-list, extract-type");
+        Console.Error.WriteLine("Supported operations: blc-all, json-index, chk-list, extract-type, manifest-assets-yaml");
         return 2;
     }
 }
