@@ -197,32 +197,44 @@ static int UnknownOperation(string operation)
 
 static int ConvertIndexJson(string gameRoot, string outputPath)
 {
-    var candidates = new[]
+    var persistentInitial = Path.Combine(gameRoot, "Endfield_Data", "Persistent", "index_initial.json");
+    var streamingInitial = Path.Combine(gameRoot, "Endfield_Data", "StreamingAssets", "index_initial.json");
+    var persistentMain = Path.Combine(gameRoot, "Endfield_Data", "Persistent", "index_main.json");
+    var streamingMain = Path.Combine(gameRoot, "Endfield_Data", "StreamingAssets", "index_main.json");
+
+    var targets = new[]
     {
-        (Input: Path.Combine(gameRoot, "Endfield_Data", "StreamingAssets", "index_main.json"), Output: "StreamingAssets.index_main.json"),
-        (Input: Path.Combine(gameRoot, "Endfield_Data", "StreamingAssets", "index_initial.json"), Output: "StreamingAssets.index_initial.json"),
-        (Input: Path.Combine(gameRoot, "Endfield_Data", "Persistent", "index_main.json"), Output: "Persistent.index_main.json"),
-        (Input: Path.Combine(gameRoot, "Endfield_Data", "Persistent", "index_initial.json"), Output: "Persistent.index_initial.json")
+        (
+            Kind: "initial",
+            Input: ResolvePreferredPath(persistentInitial, streamingInitial),
+            Output: "blc_index_initial.json"
+        ),
+        (
+            Kind: "main",
+            Input: ResolvePreferredPath(persistentMain, streamingMain),
+            Output: "blc_index_main.json"
+        )
     };
 
     Directory.CreateDirectory(outputPath);
 
-    var found = 0;
     var ok = 0;
     var fail = 0;
-    var partial = 0;
+    var missing = 0;
 
-    foreach (var item in candidates)
+    foreach (var item in targets)
     {
-        if (!File.Exists(item.Input))
+        if (item.Input == null)
+        {
+            missing++;
+            Console.Error.WriteLine($"[MISS] index_{item.Kind}.json not found in Persistent or StreamingAssets.");
             continue;
+        }
 
-        found++;
         try
         {
             var encryptedBytes = File.ReadAllBytes(item.Input);
             var firstStageBytes = JsonDecryptor.DecryptFirstStage(encryptedBytes);
-
             var outFile = Path.Combine(outputPath, item.Output);
 
             if (JsonDecryptor.TryDecodeUtf8Json(firstStageBytes, out var plainJson))
@@ -233,14 +245,8 @@ static int ConvertIndexJson(string gameRoot, string outputPath)
             }
             else
             {
-                var binFile = Path.Combine(outputPath, Path.ChangeExtension(item.Output, ".stage1.bin"));
-                var previewFile = Path.Combine(outputPath, Path.ChangeExtension(item.Output, ".stage1.preview.txt"));
-
-                File.WriteAllBytes(binFile, firstStageBytes);
-                File.WriteAllText(previewFile, JsonDecryptor.BuildPrintablePreview(firstStageBytes));
-                partial++;
-                ok++;
-                Console.WriteLine($"[PARTIAL] {item.Input}: stage-1 decrypt succeeded (not UTF-8 JSON). Saved: {binFile}, {previewFile}");
+                fail++;
+                Console.Error.WriteLine($"[FAIL] {item.Input}: decrypted bytes are not UTF-8 JSON text.");
             }
         }
         catch (Exception ex)
@@ -250,14 +256,25 @@ static int ConvertIndexJson(string gameRoot, string outputPath)
         }
     }
 
-    if (found == 0)
+    if (missing == targets.Length)
     {
-        Console.Error.WriteLine("No index json files found under Endfield_Data/StreamingAssets or Endfield_Data/Persistent.");
+        Console.Error.WriteLine("No usable index files found. Checked Persistent first, then StreamingAssets.");
         return 3;
     }
 
-    Console.WriteLine($"Done. Success={ok}, Partial={partial}, Failed={fail}");
-    return fail == 0 ? 0 : 1;
+    Console.WriteLine($"Done. Success={ok}, Failed={fail}, Missing={missing}");
+    return (fail == 0 && missing == 0) ? 0 : 1;
+}
+
+static string? ResolvePreferredPath(string preferredPath, string fallbackPath)
+{
+    if (File.Exists(preferredPath))
+        return preferredPath;
+
+    if (File.Exists(fallbackPath))
+        return fallbackPath;
+
+    return null;
 }
 
 static void PrintUsage()
