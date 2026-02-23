@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using Endfield.BlcTool.Core.Blc;
 using Endfield.JsonTool.Core.Json;
 
@@ -85,6 +86,7 @@ static int ConvertAllBlc(string gameRoot, string outputPath)
     }
 
     Directory.CreateDirectory(outputPath);
+    Directory.CreateDirectory(Path.Combine(outputPath, "blc_groups"));
 
     var ok = 0;
     var fail = 0;
@@ -143,13 +145,18 @@ static void ProcessBlcFile(string blcPath, string vfsRoot, string outputPath, re
     try
     {
         var relative = Path.GetRelativePath(vfsRoot, blcPath);
-        var outputFile = Path.Combine(outputPath, Path.ChangeExtension(relative, ".json"));
+        var bytes = File.ReadAllBytes(blcPath);
+        var parsed = BlcDecoder.Decode(bytes);
+
+        var groupName = SanitizeFileName(parsed.GroupCfgName);
+        if (string.IsNullOrWhiteSpace(groupName))
+            groupName = Path.GetFileNameWithoutExtension(blcPath);
+
+        var outputFile = Path.Combine(outputPath, "blc_groups", $"{groupName}.json");
         var outputDir = Path.GetDirectoryName(outputFile);
         if (!string.IsNullOrEmpty(outputDir))
             Directory.CreateDirectory(outputDir);
 
-        var bytes = File.ReadAllBytes(blcPath);
-        var parsed = BlcDecoder.Decode(bytes);
         var json = System.Text.Json.JsonSerializer.Serialize(parsed, new System.Text.Json.JsonSerializerOptions
         {
             WriteIndented = true
@@ -164,6 +171,21 @@ static void ProcessBlcFile(string blcPath, string vfsRoot, string outputPath, re
         fail++;
         Console.Error.WriteLine($"[FAIL] {blcPath}: {ex.Message}");
     }
+}
+
+static string SanitizeFileName(string input)
+{
+    if (string.IsNullOrWhiteSpace(input))
+        return string.Empty;
+
+    var invalidChars = Path.GetInvalidFileNameChars();
+    var sb = new StringBuilder(input.Length);
+    foreach (var ch in input.Trim())
+    {
+        sb.Append(Array.IndexOf(invalidChars, ch) >= 0 ? '_' : ch);
+    }
+
+    return sb.ToString();
 }
 
 static int UnknownOperation(string operation)
