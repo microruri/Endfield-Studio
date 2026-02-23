@@ -8,6 +8,7 @@ using Endfield.BlcTool.Core.Blc;
 using Endfield.BlcTool.Core.Crypto;
 using Endfield.BlcTool.Core.Models;
 using Endfield.Tool.CLI.App;
+using Endfield.Tool.CLI.Decode;
 using Endfield.Tool.CLI.Models;
 using Endfield.JsonTool.Core.Json;
 
@@ -24,7 +25,7 @@ public static class ExtractOperation
     /// <summary>
     /// Executes extract flow for one supported initial resource type.
     /// </summary>
-    public static int Execute(string gameRoot, string resourceTypeName, string outputPath)
+    public static int Execute(string gameRoot, string resourceTypeName, string outputPath, bool decodeContent)
     {
         Console.WriteLine("[STEP 1/6] Resolve requested resource type...");
         if (!ResourceTypeRegistry.TryGetByName(resourceTypeName, out var typeInfo))
@@ -38,6 +39,16 @@ public static class ExtractOperation
         }
 
         Console.WriteLine($"[INFO] Type: {typeInfo.Name}, TypeId={typeInfo.TypeId}");
+        if (decodeContent)
+        {
+            if (!DecodeContentProcessor.IsDecodeSupportedForType(typeInfo.Name))
+            {
+                Console.Error.WriteLine($"[FAIL] Decode/decrypt (-d) is not supported for resource type: {typeInfo.Name}");
+                return 2;
+            }
+
+            Console.WriteLine("[INFO] Decode/decrypt mode: enabled (-d)");
+        }
 
         Console.WriteLine("[STEP 2/6] Load and parse index_initial.json (Persistent first)...");
         var indexLoad = LoadIndexFromGameRoot(gameRoot);
@@ -82,7 +93,7 @@ public static class ExtractOperation
             Console.WriteLine($"[CHK-MISS] {missingChunkId}");
 
         Console.WriteLine("[STEP 5/6] Extract files in .blc order (single-thread)...");
-        var stats = ExtractFilesSequential(outputPath, parsed.Version, allFiles, plan.LoadPlans);
+        var stats = ExtractFilesSequential(outputPath, parsed.Version, typeInfo.Name, decodeContent, allFiles, plan.LoadPlans);
 
         Console.WriteLine("[STEP 6/6] Finished extraction.");
         Console.WriteLine($"Done. Success={stats.Success}, Failed={stats.Failed}, MissingChunks={plan.MissingChunkIds.Count}");
@@ -165,7 +176,7 @@ public static class ExtractOperation
     /// <summary>
     /// Extracts all files sequentially in the same order as .blc metadata.
     /// </summary>
-    private static ExtractionStats ExtractFilesSequential(string outputPath, int blcVersion, List<BlcFileInfo> allFiles, List<ChkLoadPlan> loadPlans)
+    private static ExtractionStats ExtractFilesSequential(string outputPath, int blcVersion, string resourceTypeName, bool decodeContent, List<BlcFileInfo> allFiles, List<ChkLoadPlan> loadPlans)
     {
         Directory.CreateDirectory(outputPath);
         var key = KeyDeriver.GetCommonChachaKey();
@@ -177,7 +188,7 @@ public static class ExtractOperation
         // TODO: parallelize extraction by chunk or file with bounded concurrency.
         foreach (var file in allFiles)
         {
-            if (TryExtractOneFile(file, blcVersion, key, chunkFileCache, outputPath, out var errorMessage))
+            if (TryExtractOneFile(file, blcVersion, resourceTypeName, decodeContent, key, chunkFileCache, outputPath, out var errorMessage))
             {
                 success++;
                 continue;
@@ -205,7 +216,7 @@ public static class ExtractOperation
     /// <summary>
     /// Extracts one virtual file from chunk cache and writes it to output path.
     /// </summary>
-    private static bool TryExtractOneFile(BlcFileInfo file, int blcVersion, byte[] key, Dictionary<string, byte[]> chunkFileCache, string outputPath, out string errorMessage)
+    private static bool TryExtractOneFile(BlcFileInfo file, int blcVersion, string resourceTypeName, bool decodeContent, byte[] key, Dictionary<string, byte[]> chunkFileCache, string outputPath, out string errorMessage)
     {
         try
         {
@@ -220,6 +231,15 @@ public static class ExtractOperation
 
             if (file.BUseEncrypt)
                 payload = DecryptPayload(payload, blcVersion, file.IvSeed, key);
+
+            if (decodeContent)
+            {
+                if (!DecodeContentProcessor.TryProcess(resourceTypeName, file.FileName, payload, out payload, out var decodeMessage))
+                {
+                    errorMessage = $"[FAIL-DECODE] {file.FileName}: {decodeMessage}";
+                    return false;
+                }
+            }
 
             var safeRelative = CliHelpers.BuildSafeRelativePath(file.FileName);
             if (string.IsNullOrWhiteSpace(safeRelative))

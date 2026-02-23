@@ -13,6 +13,11 @@ public sealed class CliArguments
     public bool ShowHelp { get; }
 
     /// <summary>
+    /// Whether content-level decode/decrypt should be applied to extracted files.
+    /// </summary>
+    public bool DecodeContent { get; }
+
+    /// <summary>
     /// Game root directory.
     /// </summary>
     public string? GameRoot { get; }
@@ -32,9 +37,10 @@ public sealed class CliArguments
     /// </summary>
     public string? OutputPath { get; }
 
-    private CliArguments(bool showHelp, string? gameRoot, string? operation, string? resourceTypeName, string? outputPath)
+    private CliArguments(bool showHelp, bool decodeContent, string? gameRoot, string? operation, string? resourceTypeName, string? outputPath)
     {
         ShowHelp = showHelp;
+        DecodeContent = decodeContent;
         GameRoot = gameRoot;
         Operation = operation;
         ResourceTypeName = resourceTypeName;
@@ -47,12 +53,13 @@ public sealed class CliArguments
     public static CliArguments Parse(string[] args)
     {
         var showHelp = args.Length == 0 || HasFlag(args, "-h", "--help");
+        var decodeContent = HasFlag(args, "-d", "--decode-content");
         var gameRoot = GetOption(args, "-g", "--game-root");
         var operation = GetOption(args, "-t", "--type");
         var resourceTypeName = GetOption(args, "-n", "--name");
         var outputPath = GetOption(args, "-o", "--output");
 
-        return new CliArguments(showHelp, gameRoot, operation, resourceTypeName, outputPath);
+        return new CliArguments(showHelp, decodeContent, gameRoot, operation, resourceTypeName, outputPath);
     }
 
     /// <summary>
