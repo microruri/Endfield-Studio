@@ -9,15 +9,17 @@ public sealed class CliArguments
 {
     public string[] RawArgs { get; }
     public bool ShowHelp { get; }
+    public bool DecodeContent { get; }
     public string? GameRoot { get; }
     public string? Operation { get; }
     public string? OutputPath { get; }
     public string? ResourceTypeName { get; }
 
-    private CliArguments(string[] rawArgs, bool showHelp, string? gameRoot, string? operation, string? outputPath, string? resourceTypeName)
+    private CliArguments(string[] rawArgs, bool showHelp, bool decodeContent, string? gameRoot, string? operation, string? outputPath, string? resourceTypeName)
     {
         RawArgs = rawArgs;
         ShowHelp = showHelp;
+        DecodeContent = decodeContent;
         GameRoot = gameRoot;
         Operation = operation;
         OutputPath = outputPath;
@@ -30,12 +32,13 @@ public sealed class CliArguments
     public static CliArguments Parse(string[] args)
     {
         var showHelp = args.Length == 0 || HasFlag(args, "-h", "--help");
+        var decodeContent = HasFlag(args, "-d", "--decode-content");
         var gameRoot = GetOption(args, "-g", "--game-root");
         var operation = GetOption(args, "-t", "--type");
         var outputPath = GetOption(args, "-o", "--output");
         var resourceTypeName = GetOption(args, "-n", "--name");
 
-        return new CliArguments(args, showHelp, gameRoot, operation, outputPath, resourceTypeName);
+        return new CliArguments(args, showHelp, decodeContent, gameRoot, operation, outputPath, resourceTypeName);
     }
 
     private static bool HasFlag(string[] args, string shortName, string longName)

@@ -7,6 +7,7 @@ using Endfield.BlcTool.Core.Blc;
 using Endfield.BlcTool.Core.Crypto;
 using Endfield.BlcTool.Core.Models;
 using Endfield.Cli.App;
+using Endfield.Cli.Extract;
 
 namespace Endfield.Cli.Operations;
 
@@ -15,7 +16,7 @@ namespace Endfield.Cli.Operations;
 /// </summary>
 public static class ExtractTypeOperation
 {
-    public static int Execute(string gameRoot, string resourceTypeName, string outputPath)
+    public static int Execute(string gameRoot, string resourceTypeName, string outputPath, bool decodeContent)
     {
         Console.WriteLine("[STEP 1/6] Resolve requested resource type...");
         if (!ResourceTypeRegistry.TryGetGroupHashByTypeName(resourceTypeName, out var groupHash, out var canonicalName))
@@ -186,6 +187,8 @@ public static class ExtractTypeOperation
                         payload = ChaCha20Cipher.Decrypt(key, nonce, 1, payload);
                     }
 
+                    payload = TryDecodeExtractedPayload(payload, file.FileName, decodeContent);
+
                     var safeRelative = CliHelpers.BuildSafeRelativePath(file.FileName);
                     if (string.IsNullOrWhiteSpace(safeRelative))
                     {
@@ -244,6 +247,29 @@ public static class ExtractTypeOperation
         Console.WriteLine("[STEP 6/6] Finished extraction.");
         Console.WriteLine($"Done. Success={success}, Failed={failed}, MissingChk={missingChk}, ChkFromPersistent={fromPersistent}, ChkFromStreaming={fromStreaming}");
         return failed == 0 ? 0 : 1;
+    }
+
+    private static byte[] TryDecodeExtractedPayload(byte[] payload, string fileName, bool decodeContent)
+    {
+        if (!decodeContent)
+            return payload;
+
+        if (!fileName.EndsWith(".hgmmap", StringComparison.OrdinalIgnoreCase))
+            return payload;
+
+        try
+        {
+            var manifest = ManifestDecoder.Decode(payload);
+            return System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(manifest, new System.Text.Json.JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WARN] Failed to decode manifest content for {fileName}: {ex.Message}");
+            return payload;
+        }
     }
 
     private static void ReportProgressIfNeeded(int processed, int totalFiles, int reportEvery, ref long nextTimeReportTick, int success, int failed)

@@ -51,7 +51,7 @@ public static class CliApplication
                     ? MissingOptionForOperation("extract-type", "-n/--name")
                     : string.IsNullOrWhiteSpace(parsed.OutputPath)
                         ? MissingOptionForOperation("extract-type", "-o/--output")
-                        : ExtractTypeOperation.Execute(parsed.GameRoot, parsed.ResourceTypeName, parsed.OutputPath),
+                        : ExtractTypeOperation.Execute(parsed.GameRoot, parsed.ResourceTypeName, parsed.OutputPath, parsed.DecodeContent),
 
                 _ => UnknownOperation(parsed.Operation)
             };
