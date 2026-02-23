@@ -13,6 +13,54 @@ public static class ChkListOperation
 {
     public static int Execute(string gameRoot, string resourceTypeName)
     {
+        if (resourceTypeName.Equals("all", StringComparison.OrdinalIgnoreCase))
+            return ExecuteAllTypes(gameRoot);
+
+        var stats = ExecuteSingleType(gameRoot, resourceTypeName);
+        return stats.ExitCode;
+    }
+
+    private static int ExecuteAllTypes(string gameRoot)
+    {
+        var names = ResourceTypeRegistry.GetSupportedTypeNames().ToList();
+        Console.WriteLine($"[ALL] Start listing chk files for all resource types ({names.Count})...");
+
+        var successTypes = 0;
+        var failedTypes = 0;
+        long totalRequired = 0;
+        long totalFound = 0;
+        long totalMissing = 0;
+        long totalFromPersistent = 0;
+        long totalFromStreaming = 0;
+        long totalChkBytes = 0;
+
+        for (var i = 0; i < names.Count; i++)
+        {
+            var name = names[i];
+            Console.WriteLine();
+            Console.WriteLine($"[ALL] ===== ({i + 1}/{names.Count}) {name} =====");
+            var stats = ExecuteSingleType(gameRoot, name);
+
+            totalRequired += stats.Required;
+            totalFound += stats.Found;
+            totalMissing += stats.Missing;
+            totalFromPersistent += stats.FromPersistent;
+            totalFromStreaming += stats.FromStreaming;
+            totalChkBytes += stats.TotalChkBytes;
+
+            if (stats.ExitCode == 0)
+                successTypes++;
+            else
+                failedTypes++;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"[ALL] Done. Types={names.Count}, SuccessTypes={successTypes}, FailedTypes={failedTypes}, Required={totalRequired}, Found={totalFound}, Missing={totalMissing}, FromPersistent={totalFromPersistent}, FromStreaming={totalFromStreaming}, TotalChkSize={FormatBytes(totalChkBytes)} ({totalChkBytes} B)");
+        return failedTypes == 0 ? 0 : 1;
+    }
+
+    private static ChkListStats ExecuteSingleType(string gameRoot, string resourceTypeName)
+    {
         Console.WriteLine("[STEP 1/4] Resolve requested resource type...");
         if (!ResourceTypeRegistry.TryGetGroupHashByTypeName(resourceTypeName, out var groupHash, out var canonicalName))
         {
@@ -21,7 +69,7 @@ public static class ChkListOperation
             foreach (var name in ResourceTypeRegistry.GetSupportedTypeNames())
                 Console.Error.WriteLine($"  - {name}");
 
-            return 2;
+            return new ChkListStats(2, 0, 0, 0, 0, 0, 0);
         }
 
         Console.WriteLine($"[INFO] Type: {canonicalName}, GroupHash: {groupHash}");
@@ -39,7 +87,7 @@ public static class ChkListOperation
             Console.Error.WriteLine("[FAIL] Target .blc file was not found in either source root.");
             Console.Error.WriteLine($"  - {persistentBlcPath}");
             Console.Error.WriteLine($"  - {streamingBlcPath}");
-            return 3;
+            return new ChkListStats(3, 0, 0, 0, 0, 0, 0);
         }
 
         var blcSource = selectedBlc.StartsWith(persistentVfsRoot, StringComparison.OrdinalIgnoreCase)
@@ -61,7 +109,7 @@ public static class ChkListOperation
         if (chunkIds.Count == 0)
         {
             Console.WriteLine("[DONE] No chunk files required for this type.");
-            return 0;
+            return new ChkListStats(0, 0, 0, 0, 0, 0, 0);
         }
 
         Console.WriteLine("[STEP 4/4] Resolve required .chk files (Persistent first, then StreamingAssets)...");
@@ -70,6 +118,7 @@ public static class ChkListOperation
         var missing = 0;
         var fromPersistent = 0;
         var fromStreaming = 0;
+        long totalChkBytes = 0;
 
         foreach (var chunkId in chunkIds)
         {
@@ -95,10 +144,38 @@ public static class ChkListOperation
 
             found++;
             var size = new FileInfo(selectedChk).Length;
+            totalChkBytes += size;
             Console.WriteLine($"[CHK] {relChk} | source={chkSource} | size={size}");
         }
 
-        Console.WriteLine($"Done. Required={chunkIds.Count}, Found={found}, Missing={missing}, FromPersistent={fromPersistent}, FromStreaming={fromStreaming}");
-        return missing == 0 ? 0 : 1;
+        Console.WriteLine($"Done. Required={chunkIds.Count}, Found={found}, Missing={missing}, FromPersistent={fromPersistent}, FromStreaming={fromStreaming}, TotalChkSize={FormatBytes(totalChkBytes)} ({totalChkBytes} B)");
+        return new ChkListStats(missing == 0 ? 0 : 1, chunkIds.Count, found, missing, fromPersistent, fromStreaming, totalChkBytes);
     }
+
+    private static string FormatBytes(long bytes)
+    {
+        const long kb = 1024;
+        const long mb = kb * 1024;
+        const long gb = mb * 1024;
+
+        if (bytes >= gb)
+            return $"{bytes / (double)gb:F2} GiB";
+
+        if (bytes >= mb)
+            return $"{bytes / (double)mb:F2} MiB";
+
+        if (bytes >= kb)
+            return $"{bytes / (double)kb:F2} KiB";
+
+        return $"{bytes} B";
+    }
+
+    private readonly record struct ChkListStats(
+        int ExitCode,
+        int Required,
+        int Found,
+        int Missing,
+        int FromPersistent,
+        int FromStreaming,
+        long TotalChkBytes);
 }
