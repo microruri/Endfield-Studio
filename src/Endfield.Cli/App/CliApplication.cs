@@ -65,6 +65,12 @@ public static class CliApplication
                             ? MissingOptionForOperation("extract-from-chk", "-o/--output")
                             : ExtractFromChkOperation.Execute(parsed.GameRoot, parsed.ChkPath, parsed.FileNameFilter, parsed.OutputPath),
 
+                "decode-ab" => string.IsNullOrWhiteSpace(parsed.ChkPath)
+                    ? MissingOptionForOperation("decode-ab", "-c/--chk (use it as input .ab path)")
+                    : string.IsNullOrWhiteSpace(parsed.OutputPath)
+                        ? MissingOptionForOperation("decode-ab", "-o/--output")
+                        : DecodeAbOperation.Execute(parsed.ChkPath, parsed.OutputPath),
+
                 _ => UnknownOperation(parsed.Operation)
             };
         }
@@ -84,7 +90,7 @@ public static class CliApplication
     private static int UnknownOperation(string operation)
     {
         Console.Error.WriteLine($"Unknown operation: {operation}");
-        Console.Error.WriteLine("Supported operations: blc-all, json-index, chk-list, extract-type, manifest-assets-yaml, extract-from-chk");
+        Console.Error.WriteLine("Supported operations: blc-all, json-index, chk-list, extract-type, manifest-assets-yaml, extract-from-chk, decode-ab");
         return 2;
     }
 }
