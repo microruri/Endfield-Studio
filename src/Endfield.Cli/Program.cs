@@ -1,9 +1,11 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
 using Endfield.BlcTool.Core.Blc;
+using Endfield.BlcTool.Core.Crypto;
 using Endfield.JsonTool.Core.Json;
 
 var exitCode = Run(args);
@@ -50,6 +52,12 @@ static int Run(string[] args)
             "chk-list" => string.IsNullOrWhiteSpace(resourceTypeName)
                 ? MissingOptionForOperation("chk-list", "-n/--name")
                 : PrintRequiredChkFiles(gameRoot, resourceTypeName),
+
+            "extract-type" => string.IsNullOrWhiteSpace(resourceTypeName)
+                ? MissingOptionForOperation("extract-type", "-n/--name")
+                : string.IsNullOrWhiteSpace(outputPath)
+                    ? MissingOptionForOperation("extract-type", "-o/--output")
+                    : ExtractTypeResources(gameRoot, resourceTypeName, outputPath),
 
             _ => UnknownOperation(operation)
         };
@@ -209,8 +217,194 @@ static string SanitizeFileName(string input)
 static int UnknownOperation(string operation)
 {
     Console.Error.WriteLine($"Unknown operation: {operation}");
-    Console.Error.WriteLine("Supported operations: blc-all, json-index, chk-list");
+    Console.Error.WriteLine("Supported operations: blc-all, json-index, chk-list, extract-type");
     return 2;
+}
+
+static int ExtractTypeResources(string gameRoot, string resourceTypeName, string outputPath)
+{
+    Console.WriteLine("[STEP 1/6] Resolve requested resource type...");
+    if (!TryGetGroupHashByTypeName(resourceTypeName, out var groupHash, out var canonicalName))
+    {
+        Console.Error.WriteLine($"Unknown resource type name: {resourceTypeName}");
+        Console.Error.WriteLine("Supported names:");
+        foreach (var name in GetSupportedTypeNames())
+            Console.Error.WriteLine($"  - {name}");
+
+        return 2;
+    }
+
+    Console.WriteLine($"[INFO] Type: {canonicalName}, GroupHash: {groupHash}");
+
+    var persistentVfsRoot = Path.Combine(gameRoot, "Endfield_Data", "Persistent", "VFS");
+    var streamingVfsRoot = Path.Combine(gameRoot, "Endfield_Data", "StreamingAssets", "VFS");
+    var persistentDataRoot = Path.Combine(gameRoot, "Endfield_Data", "Persistent");
+    var streamingDataRoot = Path.Combine(gameRoot, "Endfield_Data", "StreamingAssets");
+
+    var persistentBlcPath = Path.Combine(persistentVfsRoot, groupHash, $"{groupHash}.blc");
+    var streamingBlcPath = Path.Combine(streamingVfsRoot, groupHash, $"{groupHash}.blc");
+
+    Console.WriteLine("[STEP 2/6] Locate source .blc (Persistent first, then StreamingAssets)...");
+    var selectedBlc = ResolvePreferredPath(persistentBlcPath, streamingBlcPath);
+    if (selectedBlc == null)
+    {
+        Console.Error.WriteLine("[FAIL] Target .blc file was not found in either source root.");
+        Console.Error.WriteLine($"  - {persistentBlcPath}");
+        Console.Error.WriteLine($"  - {streamingBlcPath}");
+        return 3;
+    }
+
+    var blcSource = selectedBlc.StartsWith(persistentVfsRoot, StringComparison.OrdinalIgnoreCase)
+        ? "Persistent"
+        : "StreamingAssets";
+    Console.WriteLine($"[INFO] Selected .blc: {selectedBlc} ({blcSource})");
+
+    Console.WriteLine("[STEP 3/6] Decode .blc metadata...");
+    var parsed = BlcDecoder.Decode(File.ReadAllBytes(selectedBlc));
+    var allFiles = parsed.AllChunks.SelectMany(c => c.Files).ToList();
+    Console.WriteLine($"[INFO] GroupCfgName={parsed.GroupCfgName}, TotalFiles={allFiles.Count}, Chunks={parsed.AllChunks.Count}");
+
+    Console.WriteLine("[STEP 4/6] Prepare output directory and crypto context...");
+    Directory.CreateDirectory(outputPath);
+    var key = KeyDeriver.GetCommonChachaKey();
+    var chkRootHints = $"Persistent={persistentDataRoot}, StreamingAssets={streamingDataRoot}";
+    Console.WriteLine($"[INFO] CHK roots: {chkRootHints}");
+
+    Console.WriteLine("[STEP 5/6] Extract resource files from .chk containers...");
+
+    var success = 0;
+    var failed = 0;
+    var missingChk = 0;
+    var fromPersistent = 0;
+    var fromStreaming = 0;
+
+    var chkPathCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+    var chkStreamCache = new Dictionary<string, FileStream>(StringComparer.OrdinalIgnoreCase);
+
+    try
+    {
+        for (var i = 0; i < allFiles.Count; i++)
+        {
+            var file = allFiles[i];
+            if (i % 5000 == 0)
+                Console.WriteLine($"[PROGRESS] Processing {i}/{allFiles.Count}...");
+
+            try
+            {
+                var chunkId = file.FileChunkMD5Name;
+                if (string.IsNullOrWhiteSpace(chunkId))
+                {
+                    failed++;
+                    Console.Error.WriteLine($"[FAIL] Empty chunk id for file: {file.FileName}");
+                    continue;
+                }
+
+                if (!chkPathCache.TryGetValue(chunkId, out var selectedChk))
+                {
+                    var relChk = Path.Combine("VFS", groupHash, $"{chunkId}.chk");
+                    var persistentChk = Path.Combine(gameRoot, "Endfield_Data", "Persistent", relChk);
+                    var streamingChk = Path.Combine(gameRoot, "Endfield_Data", "StreamingAssets", relChk);
+                    selectedChk = ResolvePreferredPath(persistentChk, streamingChk);
+                    chkPathCache[chunkId] = selectedChk;
+
+                    if (selectedChk != null)
+                    {
+                        if (selectedChk.StartsWith(persistentDataRoot, StringComparison.OrdinalIgnoreCase))
+                            fromPersistent++;
+                        else
+                            fromStreaming++;
+                    }
+                }
+
+                if (selectedChk == null)
+                {
+                    missingChk++;
+                    failed++;
+                    Console.Error.WriteLine($"[MISS] Missing .chk for chunk={chunkId}, file={file.FileName}");
+                    continue;
+                }
+
+                if (!chkStreamCache.TryGetValue(selectedChk, out var chkStream))
+                {
+                    chkStream = File.Open(selectedChk, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    chkStreamCache[selectedChk] = chkStream;
+                }
+
+                if (file.Offset < 0 || file.Len < 0)
+                {
+                    failed++;
+                    Console.Error.WriteLine($"[FAIL] Invalid offset/len for file={file.FileName}, offset={file.Offset}, len={file.Len}");
+                    continue;
+                }
+
+                if (file.Len > int.MaxValue)
+                {
+                    failed++;
+                    Console.Error.WriteLine($"[FAIL] File too large for current extractor (>2GB): {file.FileName}");
+                    continue;
+                }
+
+                var length = (int)file.Len;
+                var payload = new byte[length];
+
+                chkStream.Seek(file.Offset, SeekOrigin.Begin);
+                var totalRead = 0;
+                while (totalRead < length)
+                {
+                    var read = chkStream.Read(payload, totalRead, length - totalRead);
+                    if (read <= 0)
+                        break;
+
+                    totalRead += read;
+                }
+
+                if (totalRead != length)
+                {
+                    failed++;
+                    Console.Error.WriteLine($"[FAIL] Short read for file={file.FileName}, expected={length}, actual={totalRead}");
+                    continue;
+                }
+
+                if (file.BUseEncrypt)
+                {
+                    var nonce = new byte[12];
+                    BinaryPrimitives.WriteInt32LittleEndian(nonce.AsSpan(0, 4), parsed.Version);
+                    BinaryPrimitives.WriteInt64LittleEndian(nonce.AsSpan(4, 8), file.IvSeed);
+                    payload = ChaCha20Cipher.Decrypt(key, nonce, 1, payload);
+                }
+
+                var safeRelative = BuildSafeRelativePath(file.FileName);
+                if (string.IsNullOrWhiteSpace(safeRelative))
+                {
+                    failed++;
+                    Console.Error.WriteLine($"[FAIL] Invalid output file path from virtual name: {file.FileName}");
+                    continue;
+                }
+
+                var outFile = Path.Combine(outputPath, safeRelative);
+                var outDir = Path.GetDirectoryName(outFile);
+                if (!string.IsNullOrEmpty(outDir))
+                    Directory.CreateDirectory(outDir);
+
+                File.WriteAllBytes(outFile, payload);
+                success++;
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                Console.Error.WriteLine($"[FAIL] {file.FileName}: {ex.Message}");
+            }
+        }
+    }
+    finally
+    {
+        foreach (var stream in chkStreamCache.Values)
+            stream.Dispose();
+    }
+
+    Console.WriteLine("[STEP 6/6] Finished extraction.");
+    Console.WriteLine($"Done. Success={success}, Failed={failed}, MissingChk={missingChk}, ChkFromPersistent={fromPersistent}, ChkFromStreaming={fromStreaming}");
+    return failed == 0 ? 0 : 1;
 }
 
 static int PrintRequiredChkFiles(string gameRoot, string resourceTypeName)
@@ -374,6 +568,39 @@ static bool TryGetGroupHashByTypeName(string resourceTypeName, out string groupH
     return !string.IsNullOrEmpty(groupHash);
 }
 
+static string BuildSafeRelativePath(string virtualPath)
+{
+    if (string.IsNullOrWhiteSpace(virtualPath))
+        return string.Empty;
+
+    var normalized = virtualPath.Replace('\\', '/');
+    var parts = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+    if (parts.Length == 0)
+        return string.Empty;
+
+    var invalid = Path.GetInvalidFileNameChars();
+    var safeParts = new List<string>(parts.Length);
+
+    foreach (var part in parts)
+    {
+        if (part == "." || part == "..")
+            continue;
+
+        var sb = new StringBuilder(part.Length);
+        foreach (var ch in part)
+            sb.Append(Array.IndexOf(invalid, ch) >= 0 ? '_' : ch);
+
+        var value = sb.ToString().Trim();
+        if (!string.IsNullOrEmpty(value))
+            safeParts.Add(value);
+    }
+
+    if (safeParts.Count == 0)
+        return string.Empty;
+
+    return Path.Combine(safeParts.ToArray());
+}
+
 static int ConvertIndexJson(string gameRoot, string outputPath)
 {
     var persistentInitial = Path.Combine(gameRoot, "Endfield_Data", "Persistent", "index_initial.json");
@@ -463,12 +690,13 @@ static void PrintUsage()
     Console.WriteLine();
     Console.WriteLine("Options:");
     Console.WriteLine("  -g, --game-root   Game root directory.");
-    Console.WriteLine("  -t, --type        Operation type. Supported: blc-all, json-index, chk-list");
-    Console.WriteLine("  -o, --output      Output directory (required by blc-all/json-index).");
-    Console.WriteLine("  -n, --name        Resource type name (required by chk-list).");
+    Console.WriteLine("  -t, --type        Operation type. Supported: blc-all, json-index, chk-list, extract-type");
+    Console.WriteLine("  -o, --output      Output directory (required by blc-all/json-index/extract-type).");
+    Console.WriteLine("  -n, --name        Resource type name (required by chk-list/extract-type).");
     Console.WriteLine("  -h, --help        Show help.");
     Console.WriteLine();
     Console.WriteLine("Example:");
-    Console.WriteLine("  Endfield.Cli -g \"C:\\Program Files\\Hypergryph Launcher\\games\\EndField Game\" -t blc-all -o \"C:\\temp\\endfield-json\"");
+    Console.WriteLine("  Endfield.Cli -g \"C:\\Program Files\\Hypergryph Launcher\\games\\EndField Game\" -t blc-all -o \"out\"");
     Console.WriteLine("  Endfield.Cli -g \"C:\\Program Files\\Hypergryph Launcher\\games\\EndField Game\" -t chk-list -n AudioChinese");
+    Console.WriteLine("  Endfield.Cli -g \"C:\\Program Files\\Hypergryph Launcher\\games\\EndField Game\" -t extract-type -n Lua -o \"out\\lua\"");
 }
