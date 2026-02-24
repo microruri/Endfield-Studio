@@ -22,6 +22,8 @@ public static class ExtractOperation
 {
     private const string PersistentSource = "Persistent";
     private const string StreamingSource = "StreamingAssets";
+    private const string IndexInitial = "index_initial.json";
+    private const string IndexMain = "index_main.json";
 
     /// <summary>
     /// Executes extract flow for one supported initial resource type.
@@ -51,26 +53,26 @@ public static class ExtractOperation
             Console.WriteLine("[INFO] Decode/decrypt mode: enabled (-d)");
         }
 
-        Console.WriteLine("[STEP 2/6] Load and parse index_initial.json (Persistent first)...");
-        var indexLoad = LoadIndexFromGameRoot(gameRoot);
-        if (indexLoad == null)
+        Console.WriteLine("[STEP 2/6] Load and parse available index files (Persistent first)...");
+        var indexLoads = LoadAvailableIndices(gameRoot);
+        if (indexLoads.Count == 0)
         {
-            Console.Error.WriteLine("[FAIL] index_initial.json was not found in Persistent or StreamingAssets.");
+            Console.Error.WriteLine("[FAIL] Neither index_initial.json nor index_main.json was found in Persistent/StreamingAssets.");
             return 3;
         }
 
-        Console.WriteLine($"[INFO] Selected index: index_initial.json ({indexLoad.Source})");
-        Console.WriteLine($"[INFO] Index entries: {indexLoad.Model.Files.Count}");
+        foreach (var indexLoad in indexLoads)
+            Console.WriteLine($"[INFO] Loaded index: {indexLoad.IndexFileName} ({indexLoad.Source}), entries={indexLoad.Model.Files.Count}");
 
-        Console.WriteLine("[STEP 3/6] Filter target .blc from index_initial files by resource type...");
-        var targetBlcEntry = FindTargetBlcEntry(indexLoad.Model, typeInfo.TypeId);
-        if (targetBlcEntry == null)
+        Console.WriteLine("[STEP 3/6] Filter target .blc from loaded index files by resource type...");
+        var targetBlc = FindTargetBlcEntry(indexLoads, typeInfo.TypeId);
+        if (targetBlc == null)
         {
-            Console.Error.WriteLine("[FAIL] No .blc entry found in index_initial.json for the requested type.");
+            Console.Error.WriteLine("[FAIL] No .blc entry found in loaded indexes for the requested type.");
             return 3;
         }
 
-        var blcRelativePath = targetBlcEntry.Name;
+        var blcRelativePath = targetBlc.Entry.Name;
         var blcPath = ResolveFromGameDataRoots(gameRoot, blcRelativePath);
         if (blcPath == null)
         {
@@ -80,7 +82,8 @@ public static class ExtractOperation
             return 3;
         }
 
-        Console.WriteLine($"[INFO] Target .blc from index: {targetBlcEntry.Name}");
+        Console.WriteLine($"[INFO] Target .blc from index: {targetBlc.Entry.Name}");
+        Console.WriteLine($"[INFO] Selected index for type: {targetBlc.Index.IndexFileName} ({targetBlc.Index.Source})");
         Console.WriteLine($"[INFO] Selected .blc file: {ToGameRelativeDisplayPath(blcPath.Source, blcRelativePath)}");
 
         Console.WriteLine("[STEP 4/6] Decode .blc and build extraction plan...");
@@ -102,26 +105,62 @@ public static class ExtractOperation
     }
 
     /// <summary>
-    /// Loads and decrypts index_initial.json from game root.
+    /// Loads all known index files from game root.
     /// </summary>
-    private static IndexLoadResult? LoadIndexFromGameRoot(string gameRoot)
+    private static List<IndexLoadResult> LoadAvailableIndices(string gameRoot)
     {
-        var resolved = ResolveFromGameDataRoots(gameRoot, "index_initial.json");
+        var results = new List<IndexLoadResult>(2);
+
+        var initial = LoadIndexFromGameRoot(gameRoot, IndexInitial);
+        if (initial != null)
+            results.Add(initial);
+
+        var main = LoadIndexFromGameRoot(gameRoot, IndexMain);
+        if (main != null)
+            results.Add(main);
+
+        return results;
+    }
+
+    /// <summary>
+    /// Loads and decrypts one index file from game root.
+    /// </summary>
+    private static IndexLoadResult? LoadIndexFromGameRoot(string gameRoot, string indexFileName)
+    {
+        var resolved = ResolveFromGameDataRoots(gameRoot, indexFileName);
         if (resolved == null)
             return null;
 
         var model = LoadIndexInitial(resolved.Path);
-        return new IndexLoadResult(model, resolved.Source);
+        return new IndexLoadResult(model, resolved.Source, indexFileName);
     }
 
     /// <summary>
-    /// Locates the .blc entry for the requested type id.
+    /// Locates the .blc entry for the requested type id across loaded indexes.
     /// </summary>
-    private static IndexFileEntry? FindTargetBlcEntry(IndexInitialModel indexModel, int typeId)
+    private static BlcSelectionResult? FindTargetBlcEntry(List<IndexLoadResult> indexLoads, int typeId)
     {
-        return indexModel.Files
-            .Where(f => f.Type == typeId)
-            .FirstOrDefault(f => f.Name.EndsWith(".blc", StringComparison.OrdinalIgnoreCase));
+        var ordered = indexLoads
+            .OrderBy(x => GetIndexPriority(x.IndexFileName))
+            .ThenBy(x => x.IndexFileName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var indexLoad in ordered)
+        {
+            var entry = indexLoad.Model.Files
+                .Where(f => f.Type == typeId)
+                .FirstOrDefault(f => f.Name.EndsWith(".blc", StringComparison.OrdinalIgnoreCase));
+
+            if (entry != null)
+                return new BlcSelectionResult(indexLoad, entry);
+        }
+
+        return null;
+    }
+
+    private static int GetIndexPriority(string indexFileName)
+    {
+        return indexFileName.Equals(IndexInitial, StringComparison.OrdinalIgnoreCase) ? 0 : 1;
     }
 
     /// <summary>
@@ -235,7 +274,7 @@ public static class ExtractOperation
 
             if (decodeContent)
             {
-                if (resourceTypeName == "InitAudio" && file.FileName.EndsWith(".pck", StringComparison.OrdinalIgnoreCase))
+                if (IsAudioPckUnpackType(resourceTypeName) && file.FileName.EndsWith(".pck", StringComparison.OrdinalIgnoreCase))
                 {
                     var safeRelativeForFolder = CliHelpers.BuildSafeRelativePath(file.FileName);
                     if (string.IsNullOrWhiteSpace(safeRelativeForFolder))
@@ -284,6 +323,11 @@ public static class ExtractOperation
             errorMessage = $"[FAIL] {file.FileName}: {ex.Message}";
             return false;
         }
+    }
+
+    private static bool IsAudioPckUnpackType(string resourceTypeName)
+    {
+        return resourceTypeName is "InitAudio" or "Audio" or "AudioChinese" or "AudioEnglish" or "AudioJapanese" or "AudioKorean";
     }
 
     /// <summary>
@@ -354,7 +398,8 @@ public static class ExtractOperation
     }
 
     private sealed record PathResolutionResult(string Path, string Source);
-    private sealed record IndexLoadResult(IndexInitialModel Model, string Source);
+    private sealed record IndexLoadResult(IndexInitialModel Model, string Source, string IndexFileName);
+    private sealed record BlcSelectionResult(IndexLoadResult Index, IndexFileEntry Entry);
     private sealed record ChkLoadPlan(string ChunkId, string ChkPath);
     private sealed record ChkPlanResult(int RequiredCount, List<ChkLoadPlan> LoadPlans, List<string> MissingChunkIds);
     private sealed record ExtractionStats(int Success, int Failed);

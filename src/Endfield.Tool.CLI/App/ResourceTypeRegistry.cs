@@ -14,7 +14,12 @@ public static class ResourceTypeRegistry
         new("InitBundle", 2),
         new("InitialExtendData", 3),
         new("BundleManifest", 4),
-        new("IFixPatchOut", 5)
+        new("IFixPatchOut", 5),
+        new("Audio", 12),
+        new("AudioChinese", 101),
+        new("AudioEnglish", 102),
+        new("AudioJapanese", 103),
+        new("AudioKorean", 104)
     };
 
     /// <summary>

@@ -17,6 +17,11 @@ public static class DecodeContentProcessor
         return resourceTypeName switch
         {
             "InitAudio" => true,
+            "Audio" => true,
+            "AudioChinese" => true,
+            "AudioEnglish" => true,
+            "AudioJapanese" => true,
+            "AudioKorean" => true,
             "InitialExtendData" => true,
             "BundleManifest" => true,
             "IFixPatchOut" => true,
@@ -75,13 +80,18 @@ public static class DecodeContentProcessor
                     return true;
 
                 case "InitAudio":
+                case "Audio":
+                case "AudioChinese":
+                case "AudioEnglish":
+                case "AudioJapanese":
+                case "AudioKorean":
                     if (!virtualFileName.EndsWith(".pck", StringComparison.OrdinalIgnoreCase))
                     {
-                        message = "unsupported extension for InitAudio";
+                        message = "unsupported extension for audio pck type";
                         return false;
                     }
 
-                    message = "InitAudio .pck is handled by dedicated unpack flow";
+                    message = "audio .pck is handled by dedicated unpack flow";
                     return true;
 
                 default:
