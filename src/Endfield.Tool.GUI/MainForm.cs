@@ -11,6 +11,8 @@ namespace Endfield.Tool.GUI;
 
 public sealed class MainForm : Form
 {
+    private const string ApplicationTitle = "Endfield.Tool.GUI";
+
     private readonly GuiLogger _logger;
     private readonly SplitContainer _mainSplitContainer;
 
@@ -45,6 +47,7 @@ public sealed class MainForm : Form
     private string? _gameRoot;
     private bool _isSelectingGameRoot;
     private bool _isApplyingTheme;
+    // Used as a generation token to drop stale async UI load results.
     private int _rightLoadVersion;
 
     private static readonly (int Type, string Name)[] TypeItems =
@@ -77,23 +80,11 @@ public sealed class MainForm : Form
         (104, "AudioKorean")
     };
 
-    private static readonly string[] JsonDataRelativePaths =
-    {
-        "Persistent/index_initial.json",
-        "Persistent/index_main.json",
-        "Persistent/pref_initial.json",
-        "Persistent/pref_main.json",
-        "StreamingAssets/index_initial.json",
-        "StreamingAssets/index_main.json",
-        "StreamingAssets/pref_initial.json",
-        "StreamingAssets/pref_main.json"
-    };
-
     public MainForm()
     {
         Thread.CurrentThread.CurrentCulture = new CultureInfo("en-US");
 
-        Text = "Endfield.Tool.GUI";
+        Text = ApplicationTitle;
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(1582, 853);
         MinimumSize = new Size(620, 372);
@@ -365,7 +356,7 @@ public sealed class MainForm : Form
             {
                 _logger.Error("Unable to read game resources.");
                 _logger.Error(validation.error);
-                MessageBox.Show(this, "Unable to read game resources", "Endfield.Tool.GUI", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(this, "Unable to read game resources", ApplicationTitle, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
@@ -381,7 +372,7 @@ public sealed class MainForm : Form
             {
                 _logger.Error("Failed to load resource catalog.");
                 _logger.Error(catalogLoad.loadError);
-                MessageBox.Show(this, "Unable to load resource catalog", "Endfield.Tool.GUI", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(this, "Unable to load resource catalog", ApplicationTitle, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
@@ -446,29 +437,12 @@ public sealed class MainForm : Form
 
     private static int GetIndexPriority(string indexFile)
     {
-        return indexFile.Equals("index_initial.json", StringComparison.OrdinalIgnoreCase) ? 0 : 1;
+        return indexFile.Equals(GameCatalogLayout.InitialIndexFileName, StringComparison.OrdinalIgnoreCase) ? 0 : 1;
     }
 
     private static int GetSourcePriority(string sourceFolder)
     {
-        return sourceFolder.Equals("Persistent", StringComparison.OrdinalIgnoreCase) ? 0 : 1;
-    }
-
-    private List<string> GetExistingJsonDataRelativePaths()
-    {
-        var result = new List<string>();
-        if (string.IsNullOrWhiteSpace(_gameRoot))
-            return result;
-
-        foreach (var relPath in JsonDataRelativePaths)
-        {
-            var normalized = relPath.Replace('/', '\\');
-            var absolutePath = Path.Combine(_gameRoot, "Endfield_Data", normalized);
-            if (File.Exists(absolutePath))
-                result.Add(relPath);
-        }
-
-        return result;
+        return sourceFolder.Equals(GameCatalogLayout.PersistentFolderName, StringComparison.OrdinalIgnoreCase) ? 0 : 1;
     }
 
     private void LeftTypeSelector_SelectedIndexChanged(object? sender, EventArgs e)
@@ -490,7 +464,7 @@ public sealed class MainForm : Form
 
         if (selectedType.TypeId == -1)
         {
-            var existingJsonDataPaths = GetExistingJsonDataRelativePaths();
+            var existingJsonDataPaths = GameDataPathResolver.GetExistingJsonDataRelativePaths(_gameRoot);
             if (existingJsonDataPaths.Count == 0)
             {
                 _leftFileList.Items.Add(new EmptyListItem("No files."));
@@ -591,10 +565,10 @@ public sealed class MainForm : Form
 
         var result = await Task.Run(() =>
         {
-            var details = BuildJsonDataDetails(relativePath, out var absolutePath, out var sourceInfo);
+            var details = BuildJsonDataDetails(relativePath, out var absolutePath);
             var rawText = BuildJsonDataRawText(absolutePath);
-            var decodedText = BuildJsonDataDecodedText(relativePath, absolutePath, sourceInfo);
-            var previewText = BuildJsonDataPreviewText(relativePath, absolutePath, sourceInfo);
+            var decodedText = BuildJsonDataDecodedText(relativePath, absolutePath);
+            var previewText = BuildJsonDataPreviewText(relativePath, absolutePath);
             return (details, rawText, decodedText, previewText);
         });
 
@@ -611,7 +585,9 @@ public sealed class MainForm : Form
     {
         ShowRightTabs(showRaw: false, showDecoded: false, showPreview: false);
 
-        var abs = ResolveResourceAbsolutePath(entry) ?? "<not found>";
+        var abs = GameDataPathResolver.TryResolveResourceAbsolutePath(_gameRoot, entry, out var resolvedPath)
+            ? resolvedPath
+            : GameDataPathResolver.NotFoundPath;
         _detailsTextBox.Text =
             $"Type: {entry.Type}{Environment.NewLine}" +
             $"Index: {entry.IndexFile}{Environment.NewLine}" +
@@ -648,26 +624,10 @@ public sealed class MainForm : Form
         _emptyRightLabel.Visible = true;
     }
 
-    private string? ResolveResourceAbsolutePath(ResourceCatalogEntry entry)
-    {
-        if (string.IsNullOrWhiteSpace(_gameRoot))
-            return null;
-
-        var primary = Path.Combine(_gameRoot, "Endfield_Data", entry.SourceFolder, entry.VirtualPath);
-        if (File.Exists(primary))
-            return primary;
-
-        var fallbackSource = entry.SourceFolder.Equals("Persistent", StringComparison.OrdinalIgnoreCase)
-            ? "StreamingAssets"
-            : "Persistent";
-        var fallback = Path.Combine(_gameRoot, "Endfield_Data", fallbackSource, entry.VirtualPath);
-        return File.Exists(fallback) ? fallback : null;
-    }
-
     private string BuildBlcDetails(int typeId, string filename, out ResourceCatalogEntry? entry, out string absolutePath)
     {
         entry = null;
-        absolutePath = "<not found>";
+        absolutePath = GameDataPathResolver.NotFoundPath;
 
         if (!_preferredBlcEntriesByType.TryGetValue(typeId, out var blcEntry))
         {
@@ -677,12 +637,13 @@ public sealed class MainForm : Form
                 "Index: N/A" + Environment.NewLine +
                 "Source: N/A" + Environment.NewLine +
                 "Virtual Path: N/A" + Environment.NewLine +
-                "Absolute Path: <not found>" + Environment.NewLine +
+                $"Absolute Path: {GameDataPathResolver.NotFoundPath}" + Environment.NewLine +
                 "Status: No .blc entry is available for this type.";
         }
 
         entry = blcEntry;
-        absolutePath = ResolveResourceAbsolutePath(blcEntry) ?? "<not found>";
+        if (!GameDataPathResolver.TryResolveResourceAbsolutePath(_gameRoot, blcEntry, out absolutePath))
+            absolutePath = GameDataPathResolver.NotFoundPath;
 
         return
             $"File: {filename}{Environment.NewLine}" +
@@ -694,14 +655,12 @@ public sealed class MainForm : Form
             $"Absolute Path: {absolutePath}";
     }
 
-    private string BuildJsonDataDetails(string relativePath, out string absolutePath, out string sourceInfo)
+    private string BuildJsonDataDetails(string relativePath, out string absolutePath)
     {
-        absolutePath = ResolveJsonDataAbsolutePath(relativePath);
-        sourceInfo = absolutePath.Contains("\\Persistent\\", StringComparison.OrdinalIgnoreCase)
-            ? "Persistent"
-            : absolutePath.Contains("\\StreamingAssets\\", StringComparison.OrdinalIgnoreCase)
-                ? "StreamingAssets"
-                : "N/A";
+        if (!GameDataPathResolver.TryResolveJsonDataAbsolutePath(_gameRoot, relativePath, out absolutePath))
+            absolutePath = GameDataPathResolver.NotFoundPath;
+
+        var sourceInfo = GameDataPathResolver.DetectJsonDataSource(absolutePath);
 
         return
             $"File: {Path.GetFileName(relativePath)}{Environment.NewLine}" +
@@ -711,34 +670,9 @@ public sealed class MainForm : Form
             $"Absolute Path: {absolutePath}";
     }
 
-    private string ResolveJsonDataAbsolutePath(string relativePath)
-    {
-        if (string.IsNullOrWhiteSpace(_gameRoot))
-            return "<not found>";
-
-        var normalized = relativePath.Replace('/', '\\');
-        var primary = Path.Combine(_gameRoot, "Endfield_Data", normalized);
-        if (File.Exists(primary))
-            return primary;
-
-        if (normalized.StartsWith("Persistent\\", StringComparison.OrdinalIgnoreCase))
-        {
-            var fallback = Path.Combine(_gameRoot, "Endfield_Data", "StreamingAssets", normalized["Persistent\\".Length..]);
-            return File.Exists(fallback) ? fallback : "<not found>";
-        }
-
-        if (normalized.StartsWith("StreamingAssets\\", StringComparison.OrdinalIgnoreCase))
-        {
-            var fallback = Path.Combine(_gameRoot, "Endfield_Data", "Persistent", normalized["StreamingAssets\\".Length..]);
-            return File.Exists(fallback) ? fallback : "<not found>";
-        }
-
-        return "<not found>";
-    }
-
     private string BuildJsonDataRawText(string absolutePath)
     {
-        if (absolutePath == "<not found>")
+        if (absolutePath == GameDataPathResolver.NotFoundPath)
             return "Referenced file is missing.";
 
         if (_jsonDataRawCache.TryGetValue(absolutePath, out var cached))
@@ -756,13 +690,13 @@ public sealed class MainForm : Form
         }
     }
 
-    private string BuildJsonDataDecodedText(string relativePath, string absolutePath, string sourceInfo)
+    private string BuildJsonDataDecodedText(string relativePath, string absolutePath)
     {
         var cacheKey = $"{relativePath}::{absolutePath}";
         if (_jsonDataDecodedTextCache.TryGetValue(cacheKey, out var cached))
             return cached;
 
-        if (absolutePath == "<not found>")
+        if (absolutePath == GameDataPathResolver.NotFoundPath)
             return "Referenced file is missing.";
 
         try
@@ -783,13 +717,13 @@ public sealed class MainForm : Form
         }
     }
 
-    private string BuildJsonDataPreviewText(string relativePath, string absolutePath, string sourceInfo)
+    private string BuildJsonDataPreviewText(string relativePath, string absolutePath)
     {
         var cacheKey = $"{relativePath}::{absolutePath}";
         if (_jsonDataPreviewTextCache.TryGetValue(cacheKey, out var cached))
             return cached;
 
-        if (absolutePath == "<not found>")
+        if (absolutePath == GameDataPathResolver.NotFoundPath)
             return "Referenced file is missing.";
 
         try
@@ -838,7 +772,7 @@ public sealed class MainForm : Form
         if (_blcRawCache.TryGetValue(typeId, out var cached))
             return cached;
 
-        if (absolutePath == "<not found>")
+        if (absolutePath == GameDataPathResolver.NotFoundPath)
             return "Referenced .blc file is missing.";
 
         try
@@ -862,7 +796,7 @@ public sealed class MainForm : Form
         if (_blcDecodedTextCache.TryGetValue(typeId, out var cached))
             return cached;
 
-        if (absolutePath == "<not found>")
+        if (absolutePath == GameDataPathResolver.NotFoundPath)
             return "Referenced .blc file is missing.";
 
         try
@@ -887,7 +821,7 @@ public sealed class MainForm : Form
         if (_blcPreviewTextCache.TryGetValue(typeId, out var cached))
             return cached;
 
-        if (absolutePath == "<not found>")
+        if (absolutePath == GameDataPathResolver.NotFoundPath)
             return "Referenced .blc file is missing.";
 
         try
@@ -1020,7 +954,7 @@ public sealed class MainForm : Form
             $"Version: {version}{Environment.NewLine}{Environment.NewLine}" +
             "A desktop tool for opening, browsing, previewing, and exporting Endfield game resources.";
 
-        MessageBox.Show(this, message, "About Endfield.Tool.GUI", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        MessageBox.Show(this, message, $"About {ApplicationTitle}", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private sealed record TypeSelectorItem(int TypeId, string Name)

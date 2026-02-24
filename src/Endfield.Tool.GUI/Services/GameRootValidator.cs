@@ -1,24 +1,7 @@
-using System.Text.Json;
-using Endfield.JsonTool.Core.Json;
-
 namespace Endfield.Tool.GUI.Services;
 
 public static class GameRootValidator
 {
-    private const string DataFolderName = "Endfield_Data";
-
-    private static readonly string[] IndexFileNames =
-    {
-        "index_initial.json",
-        "index_main.json"
-    };
-
-    private static readonly string[] SourceFolders =
-    {
-        "Persistent",
-        "StreamingAssets"
-    };
-
     public static bool TryValidate(string gameRoot, out GameRootValidationResult? result, out string error)
     {
         result = null;
@@ -30,69 +13,53 @@ public static class GameRootValidator
             return false;
         }
 
-        var dataFolder = Path.Combine(gameRoot, DataFolderName);
+        var dataFolder = Path.Combine(gameRoot, GameCatalogLayout.DataFolderName);
         if (!Directory.Exists(dataFolder))
         {
-            error = $"Missing required folder: {DataFolderName}";
+            error = $"Missing required folder: {GameCatalogLayout.DataFolderName}";
             return false;
         }
 
-        foreach (var sourceFolder in SourceFolders)
+        var streamingAssetsFolder = Path.Combine(dataFolder, GameCatalogLayout.StreamingAssetsFolderName);
+        if (!Directory.Exists(streamingAssetsFolder))
         {
-            foreach (var indexFileName in IndexFileNames)
-            {
-                var indexPath = Path.Combine(dataFolder, sourceFolder, indexFileName);
-                if (!File.Exists(indexPath))
-                    continue;
+            error = $"Missing required folder: {GameCatalogLayout.StreamingAssetsFolderName}";
+            return false;
+        }
 
-                if (TryReadIndex(indexPath, out error))
-                {
-                    result = new GameRootValidationResult(gameRoot, indexPath);
-                    return true;
-                }
+        // Validation must be based on StreamingAssets indexes so we do not
+        // accidentally accept directories with stale Persistent data only.
+        foreach (var indexFileName in GameCatalogLayout.IndexFileNames)
+        {
+            var indexPath = Path.Combine(streamingAssetsFolder, indexFileName);
+            if (!File.Exists(indexPath))
+            {
+                error = $"Missing required index file: {GameCatalogLayout.StreamingAssetsFolderName}/{indexFileName}";
+                return false;
+            }
+
+            if (!TryReadIndex(indexPath, out error))
+            {
+                error = $"Failed to read required index file: {GameCatalogLayout.StreamingAssetsFolderName}/{indexFileName} ({error})";
+                return false;
             }
         }
 
-        if (string.IsNullOrEmpty(error))
-            error = "No readable index_initial.json or index_main.json was found.";
-
-        return false;
+        var validatedIndexPath = Path.Combine(streamingAssetsFolder, GameCatalogLayout.InitialIndexFileName);
+        result = new GameRootValidationResult(gameRoot, validatedIndexPath);
+        return true;
     }
 
     private static bool TryReadIndex(string indexPath, out string error)
     {
-        error = string.Empty;
-
-        try
-        {
-            var encryptedBytes = File.ReadAllBytes(indexPath);
-            var firstStageBytes = JsonDecryptor.DecryptFirstStage(encryptedBytes);
-            if (!JsonDecryptor.TryDecodeUtf8Json(firstStageBytes, out var plainJson))
-            {
-                error = $"Index is not valid UTF-8 JSON: {indexPath}";
-                return false;
-            }
-
-            using var doc = JsonDocument.Parse(plainJson);
-            var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
-            {
-                error = $"Index JSON root is not an object: {indexPath}";
-                return false;
-            }
-
-            if (!root.TryGetProperty("files", out var files) || files.ValueKind != JsonValueKind.Array)
-            {
-                error = $"Index is missing files array: {indexPath}";
-                return false;
-            }
-
+        if (EncryptedIndexParser.TryParseFiles(indexPath, out _, out error))
             return true;
-        }
-        catch (Exception ex)
+
+        if (!string.IsNullOrWhiteSpace(error))
         {
-            error = $"Failed to read index: {Path.GetFileName(indexPath)} ({ex.Message})";
-            return false;
+            error = $"Failed to read index: {Path.GetFileName(indexPath)} ({error})";
         }
+
+        return false;
     }
 }
