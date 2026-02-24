@@ -21,6 +21,7 @@ public static class CliUsage
         Console.WriteLine("  -n, --name        Resource type name. Supported: InitAudio, InitBundle, InitialExtendData, BundleManifest, IFixPatchOut");
         Console.WriteLine("  -o, --output      Output directory for extracted files.");
         Console.WriteLine("  -d, --decode-content  Decode/decrypt extracted file content when decoder is available for selected type.");
+        Console.WriteLine("                        For InitAudio .pck: output is a same-name directory containing full unpack results + _manifest.pck.json.");
         Console.WriteLine("  -h, --help        Show help.");
         Console.WriteLine();
         Console.WriteLine("Example:");

@@ -16,6 +16,7 @@ public static class DecodeContentProcessor
     {
         return resourceTypeName switch
         {
+            "InitAudio" => true,
             "InitialExtendData" => true,
             "BundleManifest" => true,
             "IFixPatchOut" => true,
@@ -71,6 +72,16 @@ public static class DecodeContentProcessor
                     }
 
                     message = "non-ILFix IFix patch binary detected; kept original payload";
+                    return true;
+
+                case "InitAudio":
+                    if (!virtualFileName.EndsWith(".pck", StringComparison.OrdinalIgnoreCase))
+                    {
+                        message = "unsupported extension for InitAudio";
+                        return false;
+                    }
+
+                    message = "InitAudio .pck is handled by dedicated unpack flow";
                     return true;
 
                 default:
