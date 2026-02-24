@@ -65,38 +65,3 @@ public sealed class PckEntryInfo
     public int RawEntryLength { get; set; }
     public bool OffsetSizeInRange { get; set; }
 }
-
-/// <summary>
-/// Final decoded export type marker by signature.
-/// </summary>
-public enum PckPayloadKind
-{
-    Unknown,
-    Wem,
-    Bnk,
-    Plug
-}
-
-/// <summary>
-/// One exported entry manifest record.
-/// </summary>
-public sealed class PckEntryExportRecord
-{
-    public int GlobalIndex { get; set; }
-    public string OutputFile { get; set; } = string.Empty;
-    public PckEntryInfo Entry { get; set; } = new();
-    public int DecPayloadLength { get; set; }
-    public PckPayloadKind DecPayloadKind { get; set; }
-    public string? Error { get; set; }
-}
-
-/// <summary>
-/// Top-level unpack output metadata file.
-/// </summary>
-public sealed class PckUnpackManifest
-{
-    public string SourceVirtualPath { get; set; } = string.Empty;
-    public int SourceLength { get; set; }
-    public PckParseResult Parse { get; set; } = new();
-    public List<PckEntryExportRecord> Entries { get; set; } = new();
-}

@@ -276,23 +276,13 @@ public static class ExtractOperation
             {
                 if (IsAudioPckUnpackType(resourceTypeName) && file.FileName.EndsWith(".pck", StringComparison.OrdinalIgnoreCase))
                 {
-                    var safeRelativeForFolder = CliHelpers.BuildSafeRelativePath(file.FileName);
-                    if (string.IsNullOrWhiteSpace(safeRelativeForFolder))
+                    if (!PckDecryptor.TryDecrypt(payload, out payload, out var decryptMessage))
                     {
-                        errorMessage = $"[FAIL] Invalid output path from virtual name: {file.FileName}";
+                        errorMessage = $"[FAIL-DECODE] {file.FileName}: {decryptMessage}";
                         return false;
                     }
 
-                    var outPckPath = Path.Combine(outputPath, safeRelativeForFolder);
-                    if (!PckUnpackWriter.TryUnpackToDirectory(outPckPath, file.FileName, payload, out var unpackMessage))
-                    {
-                        errorMessage = $"[FAIL-DECODE] {file.FileName}: {unpackMessage}";
-                        return false;
-                    }
-
-                    Console.WriteLine($"[INFO] {unpackMessage}");
-                    errorMessage = string.Empty;
-                    return true;
+                    Console.WriteLine($"[INFO] {decryptMessage}");
                 }
 
                 if (!DecodeContentProcessor.TryProcess(resourceTypeName, file.FileName, payload, out payload, out var decodeMessage))
